@@ -1,0 +1,19 @@
+# локальные тесты и программы
+/tasks/
+
+# сборка
+build/
+*.o
+*.obj
+*.exe
+tinyvm
+a.out
+
+# редакторы
+.vscode/
+.idea/
+*.swp
+*~
+
+# macOS
+.DS_Store
