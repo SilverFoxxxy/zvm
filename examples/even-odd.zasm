@@ -1,0 +1,23 @@
+; начало программы
+READ -> R1
+MOD R1, 2 -> R2
+EQ R2, 0 -> R3
+JUMPIF R3 EVEN ; если чётное – прыгаем к блоку для чётного
+JUMP ODD ; иначе прыгаем к блоку для нечётного
+
+; блок для чётного
+MARK EVEN
+DIV R1, 2 -> R4
+WRITE R4
+WRITE NL
+JUMP END
+
+; блок для нечётного
+MARK ODD
+SUB R1, 1 -> R4
+WRITE R4
+WRITE NL
+JUMP END
+
+; конец программы
+MARK END

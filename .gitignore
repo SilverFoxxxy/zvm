@@ -1,5 +1,8 @@
 # локальные тесты и программы
 /tasks/
+tests.zasm
+zvm
+*drawio.bkp
 
 # сборка
 build/
