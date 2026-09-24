@@ -1,0 +1,13 @@
+READ -> R0                ; N
+MOV 1 -> R1               ; i = 1
+
+MARK LOOP
+GT R1, R0 -> R2           ; if i > N
+JUMPIF R2, END
+MUL R1, R1 -> R3
+WRITE R3
+ADD R1, 1 -> R1
+JUMP LOOP
+MARK END
+
+WRITE NL
