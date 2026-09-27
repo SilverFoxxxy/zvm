@@ -23,6 +23,10 @@ enum class Op : uint8_t {
   GT,
   LE,
   GE,
+  AND,
+  OR,
+  XOR,
+  NOT,
   JUMP,
   JUMPIF,
   MARK
@@ -59,6 +63,11 @@ static Op op_from_name(const std::string& s) {
   if (s == "GT") return Op::GT;
   if (s == "LE") return Op::LE;
   if (s == "GE") return Op::GE;
+  if (s == "AND") return Op::AND;
+  if (s == "OR") return Op::OR;
+  if (s == "XOR") return Op::XOR;
+  if (s == "NOT") return Op::NOT;
+  if (s == "JUMP") return Op::JUMP;
   if (s == "JUMP") return Op::JUMP;
   if (s == "JUMPIF") return Op::JUMPIF;
   if (s == "MARK") return Op::MARK;
@@ -172,6 +181,12 @@ class Interp {
           ins.c = reg_from_name(t[3]);
           break;
 
+        case Op::NOT:
+          if (t.size() != 4 || t[2] != "->") err("ожидалось: NOT X -> Ry");
+          ins.a = parse_operand(t[1]);
+          ins.c = reg_from_name(t[3]);
+          break;
+
         case Op::ADD:
         case Op::SUB:
         case Op::MUL:
@@ -183,6 +198,9 @@ class Interp {
         case Op::GT:
         case Op::LE:
         case Op::GE:
+        case Op::AND:
+        case Op::OR:
+        case Op::XOR:
           if (t.size() != 5 || t[3] != "->") err("ожидалось: OP X, Y -> Rz");
           ins.a = parse_operand(t[1]);
           ins.b = parse_operand(t[2]);
@@ -301,6 +319,20 @@ class Interp {
           break;
         case Op::GE:
           regs[ins.c] = (value_of(ins.a) >= value_of(ins.b)) ? 1 : 0;
+          break;
+
+        case Op::AND:
+          regs[ins.c] = (value_of(ins.a) != 0 && value_of(ins.b) != 0) ? 1 : 0;
+          break;
+        case Op::OR:
+          regs[ins.c] = (value_of(ins.a) != 0 || value_of(ins.b) != 0) ? 1 : 0;
+          break;
+        case Op::XOR:
+          regs[ins.c] =
+              ((value_of(ins.a) != 0) != (value_of(ins.b) != 0)) ? 1 : 0;
+          break;
+        case Op::NOT:
+          regs[ins.c] = (value_of(ins.a) == 0) ? 1 : 0;
           break;
 
         case Op::JUMP:

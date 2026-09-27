@@ -1,0 +1,5 @@
+READ -> R0
+READ -> R1
+DIV R0, R1 -> R2
+WRITE R2
+WRITE NL

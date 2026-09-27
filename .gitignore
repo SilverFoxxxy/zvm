@@ -1,6 +1,6 @@
 # локальные тесты и программы
 /tasks/
-tests.zasm
+test.zasm
 zvm
 *drawio.bkp
 
