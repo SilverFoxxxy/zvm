@@ -223,6 +223,8 @@ class Interp {
             auto sc = line.find(';');
             if (sc != std::string::npos) line.resize(sc);
 
+            for (char& c : line) c = (char)std::toupper((unsigned char)c);
+
             std::istringstream ss(normalize(line));
             std::vector<std::string> t;
             std::string tok;
