@@ -1,0 +1,16 @@
+ALLOC 5 -> R0
+
+MOV 10 -> R1
+STORE R1 -> [R0]
+MOV 20 -> R2
+STORE R2 -> [R0 + 1]
+MOV 30 -> R3
+STORE R3 -> [R0 + 2]
+
+LOAD [R0]     -> R4
+LOAD [R0 + 1] -> R5
+LOAD [R0 + 2] -> R6
+WRITE R4
+WRITE R5
+WRITE R6
+WRITE NL

@@ -427,5 +427,208 @@ write 16_overflow/01.out <<'EOF'
 9223372036854775807 -9223372036854775808
 EOF
 
+# --------------------------------------------------------------- 17
+write 17_memory_basic/program.zasm <<'EOF'
+ALLOC 5 -> R0
+
+MOV 10 -> R1
+STORE R1 -> [R0]
+MOV 20 -> R2
+STORE R2 -> [R0 + 1]
+MOV 30 -> R3
+STORE R3 -> [R0 + 2]
+
+LOAD [R0]     -> R4
+LOAD [R0 + 1] -> R5
+LOAD [R0 + 2] -> R6
+WRITE R4
+WRITE R5
+WRITE R6
+WRITE NL
+EOF
+empty 17_memory_basic/01.in
+write 17_memory_basic/01.out <<'EOF'
+10 20 30
+EOF
+
+# --------------------------------------------------------------- 18
+write 18_memory_fill_loop/program.zasm <<'EOF'
+ALLOC 5 -> R0
+
+MOV 0 -> R1
+MARK FILL
+GE R1, 5 -> R2
+JUMPIF R2, END_FILL
+MUL R1, 10 -> R3
+STORE R3 -> [R0 + R1]
+ADD R1, 1 -> R1
+JUMP FILL
+
+MARK END_FILL
+MOV 0 -> R1
+MARK PRINT
+GE R1, 5 -> R2
+JUMPIF R2, END
+LOAD [R0 + R1] -> R3
+WRITE R3
+ADD R1, 1 -> R1
+JUMP PRINT
+
+MARK END
+WRITE NL
+EOF
+empty 18_memory_fill_loop/01.in
+write 18_memory_fill_loop/01.out <<'EOF'
+0 10 20 30 40
+EOF
+
+# --------------------------------------------------------------- 19
+write 19_memory_order_matters_not/program.zasm <<'EOF'
+ALLOC 3 -> R0
+MOV 111 -> R1
+MOV 2 -> R2
+STORE R1 -> [R0 + R2]
+LOAD [R2 + R0] -> R3
+WRITE R3
+WRITE NL
+EOF
+empty 19_memory_order_matters_not/01.in
+write 19_memory_order_matters_not/01.out <<'EOF'
+111
+EOF
+
+# --------------------------------------------------------------- 20
+write 20_memory_copy/program.zasm <<'EOF'
+ALLOC 6 -> R0
+
+MOV 0 -> R1
+MARK READ
+GE R1, 3 -> R2
+JUMPIF R2, COPY_START
+READ -> R3
+STORE R3 -> [R0 + R1]
+ADD R1, 1 -> R1
+JUMP READ
+
+MARK COPY_START
+MOV 0 -> R1
+MARK COPY
+GE R1, 3 -> R2
+JUMPIF R2, PRINT_START
+LOAD [R0 + R1] -> R3
+ADD R1, 3 -> R4
+STORE R3 -> [R0 + R4]
+ADD R1, 1 -> R1
+JUMP COPY
+
+MARK PRINT_START
+MOV 3 -> R1
+MARK PRINT
+GE R1, 6 -> R2
+JUMPIF R2, END
+LOAD [R0 + R1] -> R3
+WRITE R3
+ADD R1, 1 -> R1
+JUMP PRINT
+
+MARK END
+WRITE NL
+EOF
+write 20_memory_copy/01.in <<'EOF'
+1 2 3
+EOF
+write 20_memory_copy/01.out <<'EOF'
+1 2 3
+EOF
+write 20_memory_copy/02.in <<'EOF'
+7 8 9
+EOF
+write 20_memory_copy/02.out <<'EOF'
+7 8 9
+EOF
+
+# --------------------------------------------------------------- 21
+write 21_error_bad_address/program.zasm <<'EOF'
+MOV 1000000000000000 -> R0
+MOV 1 -> R1
+STORE R1 -> [R0]
+EOF
+empty 21_error_bad_address/01.in
+empty 21_error_bad_address/01.expect_failure
+
+# --------------------------------------------------------------- 22
+write 22_memory_multiple_alloc/program.zasm <<'EOF'
+ALLOC 3 -> R0
+ALLOC 3 -> R1
+
+MOV 10 -> R2
+STORE R2 -> [R0]
+MOV 20 -> R2
+STORE R2 -> [R0 + 1]
+MOV 30 -> R2
+STORE R2 -> [R0 + 2]
+
+MOV 100 -> R2
+STORE R2 -> [R1]
+MOV 200 -> R2
+STORE R2 -> [R1 + 1]
+MOV 300 -> R2
+STORE R2 -> [R1 + 2]
+
+LOAD [R0]     -> R3
+LOAD [R0 + 1] -> R4
+LOAD [R0 + 2] -> R5
+WRITE R3
+WRITE R4
+WRITE R5
+WRITE NL
+
+LOAD [R1]     -> R3
+LOAD [R1 + 1] -> R4
+LOAD [R1 + 2] -> R5
+WRITE R3
+WRITE R4
+WRITE R5
+WRITE NL
+EOF
+empty 22_memory_multiple_alloc/01.in
+write 22_memory_multiple_alloc/01.out <<'EOF'
+10 20 30
+100 200 300
+EOF
+
+# --------------------------------------------------------------- 23
+write 23_memory_large/program.zasm <<'EOF'
+ALLOC 100000 -> R0
+MOV 0 -> R1
+
+MARK FILL
+GE R1, 100000 -> R2
+JUMPIF R2, SUM_START
+STORE R1 -> [R0 + R1]
+ADD R1, 1 -> R1
+JUMP FILL
+
+MARK SUM_START
+MOV 0 -> R1
+MOV 0 -> R3
+
+MARK SUM
+GE R1, 100000 -> R2
+JUMPIF R2, DONE
+LOAD [R0 + R1] -> R4
+ADD R3, R4 -> R3
+ADD R1, 1 -> R1
+JUMP SUM
+
+MARK DONE
+WRITE R3
+WRITE NL
+EOF
+empty 23_memory_large/01.in
+write 23_memory_large/01.out <<'EOF'
+4999950000
+EOF
+
 echo "Готово. Создано:"
 ls -1 "$CASES" | sed 's/^/  /'
