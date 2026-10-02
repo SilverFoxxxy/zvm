@@ -51,6 +51,7 @@ struct Address {
     Operand base;
     Operand offset;
     bool has_offset = false;
+    bool subtract = false;  // true для [X - Y]
 };
 
 struct Instr {
@@ -131,25 +132,39 @@ static Operand parse_operand(const std::string& s) {
 
 static Address parse_address(const std::string& token) {
     if (token.size() < 2 || token.front() != '[' || token.back() != ']')
-        throw std::runtime_error("Ожидался адрес вида [X] или [X + Y]: " +
-                                 token);
+        throw std::runtime_error(
+            "Ожидался адрес вида [X], [X + Y] или [X - Y]: " + token);
 
     std::string inner = token.substr(1, token.size() - 2);
     if (inner.empty()) throw std::runtime_error("Пустой адрес: " + token);
 
     Address a;
-    auto plus = inner.find('+');
-    if (plus == std::string::npos) {
-        a.base = parse_operand(inner);
-    } else {
-        std::string left = inner.substr(0, plus);
-        std::string right = inner.substr(plus + 1);
-        if (left.empty() || right.empty())
-            throw std::runtime_error("Плохой адрес: " + token);
-        a.base = parse_operand(left);
-        a.offset = parse_operand(right);
-        a.has_offset = true;
+
+    // Ищем + или - начиная со второго символа, чтобы знак первого
+    // операнда (например, [-5 + R1]) не был принят за разделитель.
+    size_t sep = std::string::npos;
+    for (size_t i = 1; i < inner.size(); ++i) {
+        if (inner[i] == '+' || inner[i] == '-') {
+            sep = i;
+            break;
+        }
     }
+
+    if (sep == std::string::npos) {
+        a.base = parse_operand(inner);
+        return a;
+    }
+
+    char op = inner[sep];
+    std::string left = inner.substr(0, sep);
+    std::string right = inner.substr(sep + 1);
+    if (left.empty() || right.empty())
+        throw std::runtime_error("Плохой адрес: " + token);
+
+    a.base = parse_operand(left);
+    a.offset = parse_operand(right);
+    a.has_offset = true;
+    a.subtract = (op == '-');
     return a;
 }
 
@@ -197,7 +212,10 @@ class Interp {
 
     int64_t cell_of(const Address& a) const {
         int64_t cell = value_of(a.base);
-        if (a.has_offset) cell += value_of(a.offset);
+        if (a.has_offset) {
+            int64_t off = value_of(a.offset);
+            cell += a.subtract ? -off : off;
+        }
         return cell;
     }
 

@@ -630,5 +630,40 @@ write 23_memory_large/01.out <<'EOF'
 4999950000
 EOF
 
+# --------------------------------------------------------------- 24
+write 24_memory_subtract/program.zasm <<'EOF'
+ALLOC 6 -> R0
+
+MOV 0 -> R1
+MARK FILL
+GE R1, 6 -> R2
+JUMPIF R2, DONE_FILL
+MUL R1, 10 -> R3
+STORE R3 -> [R0 + R1]
+ADD R1, 1 -> R1
+JUMP FILL
+
+MARK DONE_FILL
+
+; базовый указатель в середину массива
+MOV 3 -> R6
+ADD R0, R6 -> R7          ; r7 = r0 + 3
+
+; [r7 - 2] = [r0 + 1] = 10
+LOAD [R7 - 2] -> R3
+WRITE R3
+WRITE NL
+
+; [r7 - r6] = [r0] = 0
+LOAD [R7 - R6] -> R4
+WRITE R4
+WRITE NL
+EOF
+empty 24_memory_subtract/01.in
+write 24_memory_subtract/01.out <<'EOF'
+10
+0
+EOF
+
 echo "Готово. Создано:"
 ls -1 "$CASES" | sed 's/^/  /'
