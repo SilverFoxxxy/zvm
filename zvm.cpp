@@ -1,5 +1,6 @@
 #include <cctype>
 #include <cstdint>
+#include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -7,6 +8,10 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 enum class Op : uint8_t {
     READ,
@@ -51,7 +56,7 @@ struct Address {
     Operand base;
     Operand offset;
     bool has_offset = false;
-    bool subtract = false;  // true для [X - Y]
+    bool subtract = false;  // true for [X - Y]
 };
 
 struct Instr {
@@ -63,7 +68,10 @@ struct Instr {
     std::string label;
     int target = -1;
     int line = 0;
+    int col = 0;
 };
+
+// ---------------------------------------------------------------- helpers
 
 static Op op_from_name(const std::string& s) {
     if (s == "READ") return Op::READ;
@@ -96,107 +104,312 @@ static Op op_from_name(const std::string& s) {
     if (s == "JUMP") return Op::JUMP;
     if (s == "JUMPIF") return Op::JUMPIF;
     if (s == "MARK") return Op::MARK;
-    throw std::runtime_error("Неизвестная инструкция: " + s);
+    throw std::runtime_error("unknown instruction: " + s);
 }
 
 static int reg_from_name(const std::string& s) {
     if (s.size() < 2 || s[0] != 'R')
-        throw std::runtime_error("Ожидался регистр вида R0..R15, а не: " + s);
+        throw std::runtime_error("expected register R0..R15, got: " + s);
     int n = 0;
     for (size_t i = 1; i < s.size(); ++i) {
         if (!std::isdigit((unsigned char)s[i]))
-            throw std::runtime_error("Ожидался регистр вида R0..R15, а не: " +
-                                     s);
+            throw std::runtime_error("expected register R0..R15, got: " + s);
         n = n * 10 + (s[i] - '0');
     }
     if (n < 0 || n > 15)
-        throw std::runtime_error("Регистр вне диапазона R0..R15: " + s);
+        throw std::runtime_error("register out of range R0..R15: " + s);
     return n;
 }
 
-static Operand parse_operand(const std::string& s) {
-    Operand o;
-    if (!s.empty() && (s[0] == 'R' || s[0] == 'r')) {
-        o.is_const = false;
-        o.reg = reg_from_name(s);
-    } else {
-        o.is_const = true;
-        try {
-            o.val = std::stoll(s);
-        } catch (...) {
-            throw std::runtime_error("Не регистр и не число: " + s);
-        }
-    }
-    return o;
+// ASCII-only uppercase. Never touches non-ASCII bytes (e.g. UTF-8 Cyrillic
+// in labels/comments), so it is locale- and encoding-independent.
+static std::string ascii_upper(const std::string& s) {
+    std::string r = s;
+    for (char& c : r)
+        if (c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A');
+    return r;
 }
 
-static Address parse_address(const std::string& token) {
-    if (token.size() < 2 || token.front() != '[' || token.back() != ']')
-        throw std::runtime_error(
-            "Ожидался адрес вида [X], [X + Y] или [X - Y]: " + token);
+// ---------------------------------------------------------------- lexer
 
-    std::string inner = token.substr(1, token.size() - 2);
-    if (inner.empty()) throw std::runtime_error("Пустой адрес: " + token);
+struct Token {
+    std::string text;
+    int col = 0;  // 1-based column of first char in the original line
+};
 
-    Address a;
+// Splits a single source line into tokens, recording the column of each.
+// Handles: whitespace, ';' comments, ',' separators, '->' arrow, '[' ']',
+// standalone '+' '-', and everything else as a "word" token.
+// Case-insensitive by uppercasing only ASCII letters of each token.
+static std::vector<Token> lex_line(const std::string& line) {
+    std::vector<Token> out;
+    size_t i = 0;
+    const size_t n = line.size();
 
-    // Ищем + или - начиная со второго символа, чтобы знак первого
-    // операнда (например, [-5 + R1]) не был принят за разделитель.
-    size_t sep = std::string::npos;
-    for (size_t i = 1; i < inner.size(); ++i) {
-        if (inner[i] == '+' || inner[i] == '-') {
-            sep = i;
-            break;
+    while (i < n) {
+        unsigned char ch = (unsigned char)line[i];
+
+        if (ch == ';') break;                       // comment to end of line
+        if (ch == ' ' || ch == '\t' || ch == '\r') { ++i; continue; }
+
+        if (ch == ',') { out.push_back({",", (int)i + 1}); ++i; continue; }
+        if (ch == '[') { out.push_back({"[", (int)i + 1}); ++i; continue; }
+        if (ch == ']') { out.push_back({"]", (int)i + 1}); ++i; continue; }
+
+        if (ch == '-' && i + 1 < n && line[i + 1] == '>') {
+            out.push_back({"->", (int)i + 1});
+            i += 2;
+            continue;
         }
+
+        if (ch == '+' || ch == '-') {
+            out.push_back({std::string(1, (char)ch), (int)i + 1});
+            ++i;
+            continue;
+        }
+
+        // "word" token: run of chars that are not special
+        size_t start = i;
+        while (i < n) {
+            unsigned char c2 = (unsigned char)line[i];
+            if (c2 == ' ' || c2 == '\t' || c2 == '\r' || c2 == ';' ||
+                c2 == ',' || c2 == '[' || c2 == ']')
+                break;
+            if (c2 == '-' && i + 1 < n && line[i + 1] == '>') break;
+            if (c2 == '+' || c2 == '-') break;
+            ++i;
+        }
+        out.push_back({ascii_upper(line.substr(start, i - start)),
+                       (int)start + 1});
+    }
+    return out;
+}
+
+// ---------------------------------------------------------------- parser
+
+class Parser {
+   public:
+    Parser(std::string file, std::vector<Token> toks, int line_no,
+           std::vector<Instr>& prog)
+        : file_(std::move(file)),
+          toks_(std::move(toks)),
+          line_no_(line_no),
+          prog_(prog) {}
+
+    void parse_line() {
+        if (toks_.empty()) return;
+        k_ = 0;
+
+        Op op;
+        try {
+            op = op_from_name(toks_[0].text);
+        } catch (const std::exception&) {
+            err(toks_[0].col, "unknown instruction: " + toks_[0].text);
+        }
+
+        Instr ins;
+        ins.op = op;
+        ins.line = line_no_;
+        ins.col = toks_[0].col;
+        ++k_;
+
+        switch (op) {
+            case Op::READ:
+                expect_arrow();
+                ins.c = reg(take_word());
+                expect_end();
+                break;
+
+            case Op::WRITE: {
+                std::string w = take_word();
+                if (w == "NL") {
+                    ins.newline = true;
+                } else {
+                    ins.c = reg(w);
+                }
+                expect_end();
+                break;
+            }
+
+            case Op::MOV:
+            case Op::NOT: {
+                ins.a = parse_operand();
+                expect_arrow();
+                ins.c = reg(take_word());
+                expect_end();
+                break;
+            }
+
+            case Op::ADD:
+            case Op::SUB:
+            case Op::MUL:
+            case Op::DIV:
+            case Op::MOD:
+            case Op::EQ:
+            case Op::NE:
+            case Op::LT:
+            case Op::GT:
+            case Op::LE:
+            case Op::GE:
+            case Op::AND:
+            case Op::OR:
+            case Op::XOR: {
+                ins.a = parse_operand();
+                expect_comma();
+                ins.b = parse_operand();
+                expect_arrow();
+                ins.c = reg(take_word());
+                expect_end();
+                break;
+            }
+
+            case Op::LOAD:
+                ins.addr = parse_address();
+                expect_arrow();
+                ins.c = reg(take_word());
+                expect_end();
+                break;
+
+            case Op::STORE:
+                ins.a = parse_operand();
+                expect_arrow();
+                ins.addr = parse_address();
+                expect_end();
+                break;
+
+            case Op::ALLOC:
+                ins.a = parse_operand();
+                expect_arrow();
+                ins.c = reg(take_word());
+                expect_end();
+                break;
+
+            case Op::MARK:
+            case Op::JUMP:
+                ins.label = take_word();
+                expect_end();
+                break;
+
+            case Op::JUMPIF:
+                ins.a = parse_operand();
+                expect_comma();
+                ins.label = take_word();
+                expect_end();
+                break;
+        }
+
+        prog_.push_back(std::move(ins));
     }
 
-    if (sep == std::string::npos) {
-        a.base = parse_operand(inner);
+   private:
+    std::string file_;
+    std::vector<Token> toks_;
+    int line_no_;
+    std::vector<Instr>& prog_;
+    size_t k_ = 0;
+
+    [[noreturn]] void err(int col, const std::string& what) const {
+        throw std::runtime_error(file_ + ":" + std::to_string(line_no_) + ":" +
+                                 std::to_string(col) + ": error: " + what);
+    }
+
+    bool at_end() const { return k_ >= toks_.size(); }
+
+    int end_col() const {
+        if (toks_.empty()) return 1;
+        const Token& last = toks_.back();
+        return last.col + (int)last.text.size();
+    }
+
+    const Token& peek() const {
+        if (at_end()) err(end_col(), "unexpected end of line");
+        return toks_[k_];
+    }
+
+    std::string take_word() {
+        const Token& t = peek();
+        std::string w = t.text;
+        ++k_;
+        return w;
+    }
+
+    void expect_tok(const char* what, const char* printed) {
+        if (at_end() || toks_[k_].text != what)
+            err(at_end() ? end_col() : toks_[k_].col,
+                std::string("expected '") + printed + "'");
+        ++k_;
+    }
+
+    void expect_arrow() { expect_tok("->", "->"); }
+    void expect_comma() { expect_tok(",", ","); }
+
+    void expect_end() {
+        if (!at_end())
+            err(toks_[k_].col, "unexpected token: " + toks_[k_].text);
+    }
+
+    Operand parse_operand() {
+        bool neg = false;
+        if (!at_end() && toks_[k_].text == "-") {
+            neg = true;
+            ++k_;
+        } else if (!at_end() && toks_[k_].text == "+") {
+            ++k_;
+        }
+
+        const Token& t = peek();
+        const std::string& s = t.text;
+        Operand o;
+        if (!s.empty() && (s[0] == 'R' || s[0] == 'r')) {
+            o.is_const = false;
+            o.reg = reg(s);
+            ++k_;
+        } else {
+            o.is_const = true;
+            try {
+                size_t used = 0;
+                o.val = std::stoll(s, &used);
+                if (used != s.size())
+                    throw std::runtime_error("trailing");
+            } catch (...) {
+                err(t.col, "not a register or number: " + s);
+            }
+            if (neg) o.val = -o.val;
+            ++k_;
+        }
+        return o;
+    }
+
+    Address parse_address() {
+        // caller knows first token is '['
+        expect_tok("[", "[");
+        Address a;
+        a.base = parse_operand();
+        if (!at_end() && (toks_[k_].text == "+" || toks_[k_].text == "-")) {
+            a.subtract = (toks_[k_].text == "-");
+            a.has_offset = true;
+            ++k_;
+            a.offset = parse_operand();
+        }
+        expect_tok("]", "]");
         return a;
     }
 
-    char op = inner[sep];
-    std::string left = inner.substr(0, sep);
-    std::string right = inner.substr(sep + 1);
-    if (left.empty() || right.empty())
-        throw std::runtime_error("Плохой адрес: " + token);
-
-    a.base = parse_operand(left);
-    a.offset = parse_operand(right);
-    a.has_offset = true;
-    a.subtract = (op == '-');
-    return a;
-}
-
-static std::string normalize(const std::string& line) {
-    std::string s;
-    s.reserve(line.size() + 8);
-    int depth = 0;
-    for (size_t i = 0; i < line.size();) {
-        char ch = line[i];
-        if (ch == '[') {
-            ++depth;
-            s += ch;
-            ++i;
-        } else if (ch == ']') {
-            --depth;
-            s += ch;
-            ++i;
-        } else if (depth > 0 && std::isspace((unsigned char)ch)) {
-            ++i;  // пробелы внутри [...] убираем
-        } else if (ch == '-' && i + 1 < line.size() && line[i + 1] == '>') {
-            s += " -> ";
-            i += 2;
-        } else if (ch == ',') {
-            s += ' ';
-            ++i;
-        } else {
-            s += ch;
-            ++i;
+    int reg(const std::string& s) {
+        try {
+            return reg_from_name(s);
+        } catch (const std::exception& e) {
+            // Column of the token that produced it: it's the previous
+            // consumed token, i.e. toks_[k_-1] if we just consumed it.
+            int col = at_end()
+                          ? end_col()
+                          : (k_ >= 1 ? toks_[k_ - 1].col : 1);
+            err(col, e.what());
         }
     }
-    return s;
-}
+};
+
+// ---------------------------------------------------------------- interpreter
 
 class Interp {
     std::vector<Instr> prog;
@@ -223,7 +436,14 @@ class Interp {
         return reinterpret_cast<int64_t*>(cell_of(a) * 8);
     }
 
+    [[noreturn]] static void rerr(const Instr& in, const std::string& file,
+                                  const std::string& what) {
+        throw std::runtime_error(file + ":" + std::to_string(in.line) + ":" +
+                                 std::to_string(in.col) + ": error: " + what);
+    }
+
    public:
+    std::string file_name;
     explicit Interp(size_t limit = 10'000'000) : max_steps(limit) {}
 
     ~Interp() {
@@ -236,134 +456,38 @@ class Interp {
     void load(std::istream& in) {
         std::string line;
         int lineno = 0;
+        std::vector<Instr> parsed;
+
         while (std::getline(in, line)) {
             ++lineno;
-            auto sc = line.find(';');
-            if (sc != std::string::npos) line.resize(sc);
-
-            for (char& c : line) c = (char)std::toupper((unsigned char)c);
-
-            std::istringstream ss(normalize(line));
-            std::vector<std::string> t;
-            std::string tok;
-            while (ss >> tok) t.push_back(tok);
-            if (t.empty()) continue;
-
-            Instr ins;
-            ins.line = lineno;
-            ins.op = op_from_name(t[0]);
-
-            auto err = [&](const std::string& what) {
-                throw std::runtime_error("строка " + std::to_string(lineno) +
-                                         ": " + what);
-            };
-
-            switch (ins.op) {
-                case Op::READ:
-                    if (t.size() != 3 || t[1] != "->")
-                        err("ожидалось: READ -> Rx");
-                    ins.c = reg_from_name(t[2]);
-                    break;
-
-                case Op::WRITE:
-                    if (t.size() != 2) err("ожидалось: WRITE Rx или WRITE NL");
-                    if (t[1] == "NL") {
-                        ins.newline = true;
-                    } else {
-                        ins.c = reg_from_name(t[1]);
-                    }
-                    break;
-
-                case Op::MOV:
-                    if (t.size() != 4 || t[2] != "->")
-                        err("ожидалось: MOV X -> Ry");
-                    ins.a = parse_operand(t[1]);
-                    ins.c = reg_from_name(t[3]);
-                    break;
-
-                case Op::NOT:
-                    if (t.size() != 4 || t[2] != "->")
-                        err("ожидалось: NOT X -> Ry");
-                    ins.a = parse_operand(t[1]);
-                    ins.c = reg_from_name(t[3]);
-                    break;
-
-                case Op::ADD:
-                case Op::SUB:
-                case Op::MUL:
-                case Op::DIV:
-                case Op::MOD:
-                case Op::EQ:
-                case Op::NE:
-                case Op::LT:
-                case Op::GT:
-                case Op::LE:
-                case Op::GE:
-                case Op::AND:
-                case Op::OR:
-                case Op::XOR:
-                    if (t.size() != 5 || t[3] != "->")
-                        err("ожидалось: OP X, Y -> Rz");
-                    ins.a = parse_operand(t[1]);
-                    ins.b = parse_operand(t[2]);
-                    ins.c = reg_from_name(t[4]);
-                    break;
-
-                case Op::LOAD:
-                    if (t.size() != 4 || t[2] != "->")
-                        err("ожидалось: LOAD [X] -> Ry");
-                    ins.addr = parse_address(t[1]);
-                    ins.c = reg_from_name(t[3]);
-                    break;
-
-                case Op::STORE:
-                    if (t.size() != 4 || t[2] != "->")
-                        err("ожидалось: STORE Rx -> [Y]");
-                    ins.a = parse_operand(t[1]);
-                    ins.addr = parse_address(t[3]);
-                    break;
-
-                case Op::ALLOC:
-                    if (t.size() != 4 || t[2] != "->")
-                        err("ожидалось: ALLOC X -> Ry");
-                    ins.a = parse_operand(t[1]);
-                    ins.c = reg_from_name(t[3]);
-                    break;
-
-                case Op::MARK:
-                    if (t.size() != 2) err("ожидалось: MARK label");
-                    ins.label = t[1];
-                    break;
-                case Op::JUMP:
-                    if (t.size() != 2) err("ожидалось: JUMP label");
-                    ins.label = t[1];
-                    break;
-                case Op::JUMPIF:
-                    if (t.size() != 3) err("ожидалось: JUMPIF Rx, label");
-                    ins.a = parse_operand(t[1]);
-                    ins.label = t[2];
-                    break;
-            }
-            prog.push_back(ins);
+            std::vector<Token> toks = lex_line(line);
+            if (toks.empty()) continue;
+            Parser p(file_name, std::move(toks), lineno, parsed);
+            p.parse_line();
         }
 
+        // resolve labels
         std::unordered_map<std::string, int> marks;
-        for (size_t i = 0; i < prog.size(); ++i) {
-            if (prog[i].op == Op::MARK) {
-                if (marks.count(prog[i].label))
-                    throw std::runtime_error("Дублирующаяся метка: " +
-                                             prog[i].label);
-                marks[prog[i].label] = (int)i;
+        for (size_t i = 0; i < parsed.size(); ++i) {
+            if (parsed[i].op == Op::MARK) {
+                auto it = marks.find(parsed[i].label);
+                if (it != marks.end()) {
+                    rerr(parsed[i], file_name,
+                         "duplicate label: " + parsed[i].label);
+                }
+                marks[parsed[i].label] = (int)i;
             }
         }
-        for (auto& ins : prog) {
+        for (auto& ins : parsed) {
             if (ins.op == Op::JUMP || ins.op == Op::JUMPIF) {
                 auto it = marks.find(ins.label);
                 if (it == marks.end())
-                    throw std::runtime_error("Неизвестная метка: " + ins.label);
+                    rerr(ins, file_name,
+                         "unknown label: " + ins.label);
                 ins.target = it->second;
             }
         }
+        prog = std::move(parsed);
     }
 
     void run() {
@@ -371,7 +495,8 @@ class Interp {
         while (ip < prog.size()) {
             if (++steps > max_steps)
                 throw std::runtime_error(
-                    "Превышен лимит шагов — похоже на бесконечный цикл");
+                    file_name + ":" + "0:0: error: step limit exceeded "
+                                       "(possible infinite loop)");
 
             const Instr& ins = prog[ip];
             bool jumped = false;
@@ -382,9 +507,7 @@ class Interp {
 
                 case Op::READ:
                     if (!(std::cin >> regs[ins.c]))
-                        throw std::runtime_error(
-                            "строка " + std::to_string(ins.line) +
-                            ": не удалось прочитать число");
+                        rerr(ins, file_name, "failed to read a number");
                     break;
 
                 case Op::WRITE:
@@ -412,19 +535,13 @@ class Interp {
                     break;
                 case Op::DIV: {
                     int64_t d = value_of(ins.b);
-                    if (d == 0)
-                        throw std::runtime_error("строка " +
-                                                 std::to_string(ins.line) +
-                                                 ": деление на ноль");
+                    if (d == 0) rerr(ins, file_name, "division by zero");
                     regs[ins.c] = value_of(ins.a) / d;
                     break;
                 }
                 case Op::MOD: {
                     int64_t d = value_of(ins.b);
-                    if (d == 0)
-                        throw std::runtime_error("строка " +
-                                                 std::to_string(ins.line) +
-                                                 ": остаток по нулю");
+                    if (d == 0) rerr(ins, file_name, "modulo by zero");
                     regs[ins.c] = value_of(ins.a) % d;
                     break;
                 }
@@ -476,9 +593,8 @@ class Interp {
                 case Op::ALLOC: {
                     int64_t n = value_of(ins.a);
                     if (n < 0)
-                        throw std::runtime_error(
-                            "строка " + std::to_string(ins.line) +
-                            ": ALLOC с отрицательным размером");
+                        rerr(ins, file_name,
+                             "ALLOC with negative size");
                     int64_t* p = new int64_t[n];
                     allocations.push_back(p);
                     regs[ins.c] = reinterpret_cast<int64_t>(p) / 8;
@@ -501,22 +617,32 @@ class Interp {
     }
 };
 
+// ---------------------------------------------------------------- main
+
 int main(int argc, char** argv) {
+#ifdef _WIN32
+    // Make sure non-ASCII paths/messages in any future output work.
+    SetConsoleOutputCP(CP_UTF8);
+#endif
+
     if (argc < 2) {
-        std::cerr << "Использование: " << argv[0] << " program.asm\n";
+        std::cerr << "usage: " << argv[0] << " program.asm\n";
         return 1;
     }
+
+    std::ifstream f(argv[1]);
+    if (!f) {
+        std::cerr << argv[1] << ": error: cannot open file\n";
+        return 1;
+    }
+
     try {
-        std::ifstream f(argv[1]);
-        if (!f) {
-            std::cerr << "Не могу открыть " << argv[1] << '\n';
-            return 1;
-        }
         Interp vm;
+        vm.file_name = argv[1];
         vm.load(f);
         vm.run();
     } catch (const std::exception& e) {
-        std::cerr << "Ошибка: " << e.what() << '\n';
+        std::cerr << e.what() << '\n';
         return 1;
     }
     return 0;
